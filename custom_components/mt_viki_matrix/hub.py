@@ -1,122 +1,89 @@
-"""Async TCP client for the MT-VIKI HDMI matrix control protocol.
+"""Async HTTP client for the MT-VIKI HDMI matrix's built-in web control API.
 
-The matrix accepts plain-text ASCII commands terminated with '.' over a
-raw TCP socket (default port 8080) — the same command set used on its
-RS232 port. A successful switch reply is typically "OK" (or the switch
-just echoes/ack's silently on some firmware); a failure is "ERR".
+Despite the manual documenting a plain-text RS232/TCP protocol, the L-series
+units (MT-HD44L / MT-HD88L / MT-HD1616L) actually expose control through a
+tiny HTTP CGI endpoint used by their web GUI:
 
-This client keeps one persistent connection open, serializes writes with
-a lock (so responses can't get interleaved), and reconnects automatically
-if the socket drops.
+    POST http://<ip>/cgi-bin/matrixs.cgi
+    Authorization: Basic YWRtaW46YWRtaW4=   (fixed admin:admin, baked into firmware)
+    Content-Type: application/x-www-form-urlencoded
+    Body: matrixdata={"COMMAND": "SW <input> <output> "}
+
+This was confirmed against a working community Home Assistant integration
+for the MT-HD88L (github.com/Timman70/MT-VIKI-MT-HD88L-Matrix-Switch).
+There is no known query/status endpoint, so state in Home Assistant is
+optimistic only.
 """
 from __future__ import annotations
 
-import asyncio
+import json
 import logging
 
-from .const import CMD_TERMINATOR, SOCKET_TIMEOUT
+import aiohttp
+from homeassistant.core import HomeAssistant
+from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
 _LOGGER = logging.getLogger(__name__)
 
+# Fixed by the device firmware — the web GUI always authenticates as
+# admin/admin regardless of what you've set on the device itself.
+_AUTH_HEADER = "Basic YWRtaW46YWRtaW4="
+_TIMEOUT = aiohttp.ClientTimeout(total=5)
+
 
 class MatrixConnectionError(Exception):
-    """Raised when the matrix can't be reached."""
+    """Raised when the matrix's HTTP endpoint can't be reached."""
 
 
 class MtVikiMatrixHub:
-    """Manages the TCP connection to one HDMI matrix."""
+    """Talks to one matrix's cgi-bin HTTP control endpoint."""
 
-    def __init__(self, host: str, port: int) -> None:
+    def __init__(self, hass: HomeAssistant, host: str) -> None:
+        self._session = async_get_clientsession(hass)
         self._host = host
-        self._port = port
-        self._reader: asyncio.StreamReader | None = None
-        self._writer: asyncio.StreamWriter | None = None
-        self._lock = asyncio.Lock()
 
     @property
     def host(self) -> str:
         return self._host
 
-    async def async_connect(self) -> None:
-        """Open (or re-open) the TCP connection."""
-        async with self._lock:
-            await self._connect_locked()
+    def _url(self) -> str:
+        return f"http://{self._host}/cgi-bin/matrixs.cgi"
 
-    async def _connect_locked(self) -> None:
-        if self._writer is not None and not self._writer.is_closing():
-            return
+    async def _post_command(self, command: str) -> str:
+        payload = {"COMMAND": command}
+        data = {"matrixdata": json.dumps(payload)}
+        headers = {
+            "Content-Type": "application/x-www-form-urlencoded",
+            "Authorization": _AUTH_HEADER,
+        }
         try:
-            self._reader, self._writer = await asyncio.wait_for(
-                asyncio.open_connection(self._host, self._port),
-                timeout=SOCKET_TIMEOUT,
-            )
-        except (OSError, asyncio.TimeoutError) as err:
-            self._reader = None
-            self._writer = None
+            async with self._session.post(
+                self._url(), data=data, headers=headers, timeout=_TIMEOUT
+            ) as resp:
+                text = await resp.text()
+                _LOGGER.debug(
+                    "Sent %r -> HTTP %s: %s", command, resp.status, text
+                )
+                return text
+        except (aiohttp.ClientError, TimeoutError) as err:
             raise MatrixConnectionError(
-                f"Could not connect to matrix at {self._host}:{self._port}"
+                f"Could not reach matrix at {self._host}: {err}"
             ) from err
 
-    async def async_close(self) -> None:
-        """Close the TCP connection."""
-        async with self._lock:
-            if self._writer is not None:
-                self._writer.close()
-                try:
-                    await self._writer.wait_closed()
-                except OSError:
-                    pass
-            self._reader = None
-            self._writer = None
+    async def async_switch(self, input_ch: int, output_ch: int) -> None:
+        """Route one input to one output."""
+        await self._post_command(f"SW {input_ch} {output_ch} ")
 
     async def async_test_connection(self) -> bool:
-        """Used by the config flow to validate host/port before setup."""
+        """Used by the config flow. Does a lightweight reachability check
+        (not a real switch command) so setup doesn't accidentally rewire
+        anything before the user has configured inputs/outputs."""
         try:
-            await self.async_connect()
-        except MatrixConnectionError:
+            async with self._session.get(
+                f"http://{self._host}/", timeout=_TIMEOUT
+            ) as resp:
+                # Any HTTP response at all means something is listening
+                # and speaking HTTP on this host.
+                return resp.status < 500
+        except (aiohttp.ClientError, TimeoutError):
             return False
-        return True
-
-    async def async_send_command(self, command: str) -> str:
-        """Send a raw protocol command (without trailing '.') and return the reply.
-
-        Commands and replies in this protocol are short, so we read until
-        a newline or the socket goes idle for SOCKET_TIMEOUT — whichever
-        comes first. Some firmware doesn't reply to every command, so a
-        timeout on read is treated as "no reply" rather than an error.
-        """
-        if not command.endswith(CMD_TERMINATOR):
-            command += CMD_TERMINATOR
-
-        async with self._lock:
-            for attempt in (1, 2):
-                try:
-                    await self._connect_locked()
-                    assert self._writer is not None
-                    assert self._reader is not None
-
-                    _LOGGER.debug("Sending to %s: %s", self._host, command)
-                    self._writer.write(command.encode("ascii"))
-                    await self._writer.drain()
-
-                    try:
-                        raw = await asyncio.wait_for(
-                            self._reader.readline(), timeout=SOCKET_TIMEOUT
-                        )
-                        reply = raw.decode("ascii", errors="ignore").strip()
-                        _LOGGER.debug("Reply from %s: %s", self._host, reply)
-                        return reply
-                    except asyncio.TimeoutError:
-                        return ""
-
-                except (OSError, MatrixConnectionError) as err:
-                    _LOGGER.warning(
-                        "Matrix command failed (attempt %s): %s", attempt, err
-                    )
-                    self._writer = None
-                    self._reader = None
-                    if attempt == 2:
-                        raise MatrixConnectionError(str(err)) from err
-                    await asyncio.sleep(0.5)
-
-        return ""

@@ -14,13 +14,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
-from .const import (
-    CMD_CLOSE_OUTPUT,
-    CMD_SWITCH,
-    CONF_INPUTS,
-    CONF_OUTPUTS,
-    DOMAIN,
-)
+from .const import CONF_INPUTS, CONF_OUTPUTS, DOMAIN
 from .hub import MtVikiMatrixHub
 
 _LOGGER = logging.getLogger(__name__)
@@ -45,14 +39,16 @@ async def async_setup_entry(
 
 
 class MtVikiMatrixOutput(MediaPlayerEntity):
-    """One matrix output, represented as a media_player with source select."""
+    """One matrix output, represented as a media_player with source select.
+
+    There's no known status/query command for this device's HTTP API, so
+    state is optimistic: it reflects the last command Home Assistant sent,
+    not a live read-back. If you change a route from the matrix's own
+    remote or web GUI, HA won't see it until you change it again from HA.
+    """
 
     _attr_has_entity_name = True
-    _attr_supported_features = (
-        MediaPlayerEntityFeature.SELECT_SOURCE
-        | MediaPlayerEntityFeature.TURN_ON
-        | MediaPlayerEntityFeature.TURN_OFF
-    )
+    _attr_supported_features = MediaPlayerEntityFeature.SELECT_SOURCE
     _attr_should_poll = False
 
     def __init__(
@@ -69,7 +65,7 @@ class MtVikiMatrixOutput(MediaPlayerEntity):
         self._attr_unique_id = f"{entry_id}_output_{output_num}"
         self._attr_source_list = sources
         self._attr_source = None
-        self._attr_state = MediaPlayerState.OFF
+        self._attr_state = MediaPlayerState.ON
         self._attr_device_info = DeviceInfo(
             identifiers={(DOMAIN, entry_id)},
             name=matrix_name,
@@ -85,24 +81,8 @@ class MtVikiMatrixOutput(MediaPlayerEntity):
             _LOGGER.error("Unknown source '%s'", source)
             return
 
-        command = CMD_SWITCH.format(inp=input_num, out=self._output_num)
-        await self._hub.async_send_command(command)
+        await self._hub.async_switch(input_num, self._output_num)
 
         self._attr_source = source
         self._attr_state = MediaPlayerState.ON
         self.async_write_ha_state()
-
-    async def async_turn_off(self) -> None:
-        """Blank this output."""
-        command = CMD_CLOSE_OUTPUT.format(out=self._output_num)
-        await self._hub.async_send_command(command)
-        self._attr_state = MediaPlayerState.OFF
-        self.async_write_ha_state()
-
-    async def async_turn_on(self) -> None:
-        """Restore the last-selected source on this output, if known."""
-        if self._attr_source is not None:
-            await self.async_select_source(self._attr_source)
-        else:
-            self._attr_state = MediaPlayerState.ON
-            self.async_write_ha_state()

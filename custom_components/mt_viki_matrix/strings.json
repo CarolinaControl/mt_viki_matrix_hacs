@@ -6,7 +6,6 @@
         "data": {
           "name": "Name",
           "host": "IP address",
-          "port": "TCP port",
           "size": "Matrix size"
         }
       },
@@ -19,7 +18,7 @@
       }
     },
     "error": {
-      "cannot_connect": "Could not connect to the matrix. Check the IP address, port, and that it's on the same network."
+      "cannot_connect": "Could not connect to the matrix. Check the IP address and that it's on the same network."
     }
   }
 }

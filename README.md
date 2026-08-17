@@ -1,49 +1,63 @@
 # MT-VIKI HDMI Matrix — Home Assistant integration
 
-Control an MT-VIKI HDMI matrix switcher (4x4 / 8x8 / 16x16, e.g. the
-MT-HD44L / MT-HD88L / MT-HD1616L family) from Home Assistant over its
-TCP/IP control port.
+Control an MT-VIKI L-series HDMI matrix switcher (4x4 / 8x8 / 16x16 —
+MT-HD44L / MT-HD88L / MT-HD1616L) from Home Assistant.
 
-Built from the manufacturer's control-protocol documentation: TCP port
-**8080**, plain-text commands terminated with `.` (identical syntax to
-the unit's RS232 port at 115200-8-N-1).
+## The actual protocol
+
+The printed manual documents a plain-text RS232/TCP command set, but the
+L-series units actually control switching through a small HTTP CGI
+endpoint used by their built-in web GUI:
+
+```
+POST http://<matrix-ip>/cgi-bin/matrixs.cgi
+Authorization: Basic YWRtaW46YWRtaW4=      (fixed admin:admin, baked into firmware)
+Content-Type: application/x-www-form-urlencoded
+
+matrixdata={"COMMAND": "SW <input> <output> "}
+```
+
+This was confirmed by cross-checking a working community integration for
+the MT-HD88L (credit: [Timman70 / timcloud](https://github.com/Timman70/MT-VIKI-MT-HD88L-Matrix-Switch)).
+Raw TCP text commands on port 8080 (as documented in the manual) do not
+appear to do anything on these units -- the port is open, but nothing is
+listening for that protocol on it.
 
 ## What you get
 
 - One `media_player` entity per **output**, with a `source` dropdown
-  listing every **input** — pick a source in the HA UI/dashboard/voice
-  assistant the same way you'd pick an app on a TV.
-- Turning an output "off" blanks that output (`0X[out].`); turning it
-  back on restores the last-selected input.
-- A `switch.buzzer` entity to mute/unmute the confirmation beep.
+  listing every **input**.
 
-## Not (yet) implemented
+## Not (yet) implemented / known limitations
 
-The protocol table in the manual doesn't expose a query/status command
-over TCP (status polling is only documented via the front-panel LCD),
-so entity state is **optimistic** — it reflects the last command HA
-sent, not a live read-back from the matrix. If someone changes a route
-from the physical panel or remote, Home Assistant won't see it until
-you change it from HA again. Scene save/recall (`Save[Y].`/`Recall[Y].`)
-and the "all-to-one" broadcast command aren't wired to entities yet —
-they're trivial to add as `button` entities using the same `hub.py`
-helper if you want them; shout if you'd like that added.
+- **No status polling.** There's no known query/read-back endpoint, so
+  entity state is optimistic -- it reflects the last command HA sent, not
+  a live read from the matrix. Switching from the matrix's own remote or
+  web GUI won't be reflected in HA until you change it from HA again.
+- **No "off"/blank command.** The manual's `0X[out].` blanking command is
+  for the RS232/TCP protocol, which doesn't appear to be active on these
+  units. If you find the equivalent HTTP command (browser dev tools ->
+  Network tab while clicking "blank" in the matrix's own web GUI, if it
+  has one, will show it), it's a one-line addition to `hub.py`.
+- **No scene save/recall or buzzer control** -- same reason: unconfirmed
+  HTTP equivalents. Easy to add once you capture the right `COMMAND`
+  string from the web GUI's own network traffic.
 
 ## Installation (HACS custom repository)
 
-1. In HA: HACS → the "⋮" menu (top right) → **Custom repositories**.
+1. In HA: HACS -> the ":" menu (top right) -> **Custom repositories**.
 2. Add this repo's URL, category **Integration**.
 3. Install "MT-VIKI HDMI Matrix", then restart Home Assistant.
-4. Settings → Devices & Services → **Add Integration** → search
+4. Settings -> Devices & Services -> **Add Integration** -> search
    "MT-VIKI HDMI Matrix".
-5. Enter the matrix's IP address (check the front-panel LCD — default
-   is `192.168.1.200`), port `8080`, and pick your matrix size (or
-   "custom" for an asymmetric input/output count).
+5. Enter the matrix's IP address and pick your matrix size (or "custom"
+   for an asymmetric input/output count). No port or credentials needed
+   -- both are fixed by the firmware.
 
 ## Manual install (no HACS)
 
 Copy `custom_components/mt_viki_matrix/` into your Home Assistant
-`config/custom_components/` folder, restart HA, then follow steps 4–5
+`config/custom_components/` folder, restart HA, then follow steps 4-5
 above.
 
 ## Repo layout
@@ -51,39 +65,33 @@ above.
 ```
 hacs.json
 custom_components/mt_viki_matrix/
-  __init__.py        # sets up the TCP hub, forwards to platforms
-  hub.py              # persistent async TCP client, sends "cmd." and reads the reply
-  config_flow.py      # UI setup: host/port/size
-  const.py             # command templates from the protocol doc
+  __init__.py        # sets up the hub, forwards to the media_player platform
+  hub.py              # HTTP client for /cgi-bin/matrixs.cgi
+  config_flow.py      # UI setup: host + matrix size
+  const.py
   media_player.py     # one entity per output
-  switch.py            # buzzer on/off
   manifest.json
   strings.json / translations/en.json
 ```
 
-## Protocol reference (for anyone extending this)
+## If this still doesn't switch anything
 
-| Command | Meaning |
-|---|---|
-| `[in]X[out].` | Switch `in` → `out`, e.g. `3X5.` |
-| `[in]X[out1]&[out2]&....` | Switch `in` to several outputs, e.g. `3X5&6&7&8.` |
-| `[in]All.` | Switch `in` to every output |
-| `0X[out].` | Blank a single output |
-| `All1.` | Reset all outputs to 1:1 with matching input |
-| `Save[1-9].` | Save current routing to scene `1-9` |
-| `Recall[1-9].` | Recall scene `1-9` |
-| `BeepON.` / `BeepOFF.` | Confirmation beep on/off |
-
-Commands are case-insensitive; the trailing `.` is mandatory. Input
-range depends on matrix size (e.g. 1–8 on an 8x8 unit).
-
-## Troubleshooting
-
-- **Config flow says "cannot connect":** confirm the matrix and HA are
-  on the same network/VLAN, and that port 8080 isn't blocked by a
-  firewall. You can sanity-check from a terminal first:
-  `printf '3X5.' | nc <matrix-ip> 8080`
-- **Switch does nothing:** some firmware doesn't send a reply for
-  every command — that's expected and handled (the integration treats
-  a read timeout as "no reply", not an error). Watch the matrix's own
-  LCD/beep to confirm the switch happened.
+1. Open `http://<matrix-ip>/` in a browser -- does its own web GUI load?
+   If not, we have the wrong IP, or this unit's firmware genuinely
+   doesn't expose a web GUI (in which case this integration's approach
+   won't work and we're back to figuring out the real protocol from
+   scratch -- packet-capturing the vendor's Windows control software with
+   Wireshark is the most reliable way to reverse-engineer it).
+2. If the web GUI loads, open browser dev tools (F12) -> Network tab,
+   click a source button in the GUI itself, and see exactly what request
+   fires. If it's not `/cgi-bin/matrixs.cgi`, or the body looks
+   different, send me what you see and I'll adjust `hub.py` to match.
+3. Enable debug logging in HA and try selecting a source again:
+   ```yaml
+   logger:
+     logs:
+       custom_components.mt_viki_matrix: debug
+   ```
+   Check Settings -> System -> Logs for the exact request sent and the
+   matrix's HTTP response -- that tells us if it's rejecting the command
+   (bad auth/format) versus not receiving it at all.

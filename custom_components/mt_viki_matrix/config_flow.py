@@ -6,17 +6,11 @@ from typing import Any
 import voluptuous as vol
 
 from homeassistant import config_entries
-from homeassistant.const import CONF_HOST, CONF_NAME, CONF_PORT
+from homeassistant.const import CONF_HOST, CONF_NAME
 from homeassistant.core import HomeAssistant
 from homeassistant.data_entry_flow import FlowResult
 
-from .const import (
-    CONF_INPUTS,
-    CONF_OUTPUTS,
-    DEFAULT_NAME,
-    DEFAULT_PORT,
-    DOMAIN,
-)
+from .const import CONF_INPUTS, CONF_OUTPUTS, DEFAULT_NAME, DOMAIN
 from .hub import MtVikiMatrixHub
 
 # Matrices in this family ship as 4x4, 8x8 or 16x16, but let the user pick
@@ -32,19 +26,14 @@ STEP_USER_SCHEMA = vol.Schema(
     {
         vol.Required(CONF_NAME, default=DEFAULT_NAME): str,
         vol.Required(CONF_HOST): str,
-        vol.Required(CONF_PORT, default=DEFAULT_PORT): int,
         vol.Required("size", default="8x8"): vol.In(list(SIZE_PRESETS)),
     }
 )
 
 
-async def _validate_host(hass: HomeAssistant, host: str, port: int) -> None:
-    hub = MtVikiMatrixHub(host, port)
-    try:
-        ok = await hub.async_test_connection()
-    finally:
-        await hub.async_close()
-    if not ok:
+async def _validate_host(hass: HomeAssistant, host: str) -> None:
+    hub = MtVikiMatrixHub(hass, host)
+    if not await hub.async_test_connection():
         raise CannotConnect
 
 
@@ -63,9 +52,7 @@ class MtVikiMatrixConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
         if user_input is not None:
             try:
-                await _validate_host(
-                    self.hass, user_input[CONF_HOST], user_input[CONF_PORT]
-                )
+                await _validate_host(self.hass, user_input[CONF_HOST])
             except CannotConnect:
                 errors["base"] = "cannot_connect"
             else:
