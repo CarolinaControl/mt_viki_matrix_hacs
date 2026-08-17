@@ -1,0 +1,7 @@
+{
+  "name": "MT-VIKI HDMI Matrix",
+  "content_in_root": false,
+  "render_readme": true,
+  "domains": ["media_player", "switch"],
+  "homeassistant": "2024.1.0"
+}
