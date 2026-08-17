@@ -1,0 +1,24 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Connect to MT-VIKI HDMI Matrix",
+        "data": {
+          "name": "Name",
+          "host": "IP address",
+          "size": "Matrix size"
+        }
+      },
+      "custom_size": {
+        "title": "Custom matrix size",
+        "data": {
+          "inputs": "Number of inputs",
+          "outputs": "Number of outputs"
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "Could not connect to the matrix. Check the IP address and that it's on the same network."
+    }
+  }
+}

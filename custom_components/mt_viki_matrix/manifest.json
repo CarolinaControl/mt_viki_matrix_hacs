@@ -1,0 +1,11 @@
+{
+  "domain": "mt_viki_matrix",
+  "name": "MT-VIKI HDMI Matrix",
+  "codeowners": ["@yourname"],
+  "config_flow": true,
+  "documentation": "https://github.com/yourname/ha-mt-viki-matrix",
+  "issue_tracker": "https://github.com/yourname/ha-mt-viki-matrix/issues",
+  "iot_class": "local_push",
+  "requirements": [],
+  "version": "0.1.0"
+}
